@@ -25,6 +25,18 @@ if (!class_exists('ProductExport')) {
             add_action('admin_init', [$this, 'page_init']);
             add_action('admin_enqueue_scripts', [$this, 'admin_plugin_styles']);
             add_action('wp_ajax_generate_report', [$this, 'ajaxReport']);
+
+            $this->provinceList = array(
+                'Eastern_Cape',
+                'Free_State',
+                'Gauteng',
+                'KwaZulu_Natal',
+                'Limpopo',
+                'Mpumalanga',
+                'North_West',
+                'Northern_Cape',
+                'Western_Cape',
+            );
         }
 
         /**
@@ -53,8 +65,9 @@ if (!class_exists('ProductExport')) {
             <form method="post" action="options.php">
             <?php
                 settings_fields('eg_product_export_settings_group');
-            do_settings_sections('main-page-products-export');
-            submit_button('Generate Report', 'delete', 'generate-report', false); ?>
+                do_settings_sections('main-page-products-export');
+                submit_button('Generate Report', 'delete', 'generate-report', false);
+                ?>
             </form>
             </div>
         <?php
@@ -78,23 +91,27 @@ if (!class_exists('ProductExport')) {
                 'main-page-products-export' // Page
             );
 
+            
             add_settings_field(
-                'eg_product_export_start_date',
-                'Start Date',
+                'eg_product_export_month',
+                'Month and Year',
                 [$this, 'display_date_picker'],
                 'main-page-products-export',
                 'eg_product_export_section',
-                ['id' => 'eg_product_export_start_date']
+                [
+                    'id' => 'eg_product_export_month',
+                    'picker_type' => 'month'
+                ]
             );
 
-            add_settings_field(
-                'eg_product_export_end_date',
-                'End Date',
-                [$this, 'display_date_picker'],
-                'main-page-products-export',
-                'eg_product_export_section',
-                ['id' => 'eg_product_export_end_date'] // Page
+            add_settings_section(
+                'eg_product_export_download_list',
+                'Download CSV files for <span class="month_year">selected month and year</span>',
+                [$this, 'display_download_list'],
+                'main-page-products-export'
             );
+
+            
         }
 
         /**
@@ -118,7 +135,29 @@ if (!class_exists('ProductExport')) {
         public function display_date_picker($args)
         {
             extract($args);
-            echo '<input type="date" id="' . $args['id'] . '" name="' . $args['id'] . '" value="" class="eg-product-export-datepicker" />';
+            echo '<input type="' . $args['picker_type'] . '" id="' . $args['id'] . '" name="' . $args['id'] . '" value="' . date('Y-m') . '" class="eg-product-export-datepicker" />';
+        }
+
+        public function display_download_list()
+        {
+            $listHTML = "
+                <table class='form-table csv-list striped hidden' role='presentation'>
+                    <tbody>
+                        <tr class='row_ALL'>
+                            <td><strong> ** ALL PROVINCES - </strong></td>
+                            <td><a class='csv_ALL' href='#' download>Download CSV</a></td>
+                        </tr>";
+                            foreach ($this->provinceList as $province) {
+                                $listHTML .= "<tr class='row_". $province . "'><td><strong> " . $province . "</strong></td>
+                                <td><a class='csv_" . $province . "' href='#' download>Download CSV</a></td></tr>";
+                            }
+
+            $listHTML .= "
+                    </tbody>
+                </table>";
+
+            echo $listHTML;
+
         }
 
         public function admin_plugin_styles()
@@ -128,8 +167,8 @@ if (!class_exists('ProductExport')) {
 
         public function ajaxReport()
         {
-            if (isset($_POST['action']) && isset($_POST['endDate']) && isset($_POST['startDate']) && $_POST['action'] === 'generate_report') {
-                $url = $this->reportQuery($_POST['startDate'], $_POST['endDate']);
+            if (isset($_POST['action']) && isset($_POST['month']) && isset($_POST['year']) && $_POST['action'] === 'generate_report') {
+                $url = $this->reportQuery($_POST['month'], $_POST['year']);
 
                 $output = ['download' => true, 'message' => __('Download Success', '_tk'), 'url' => $url, 'filename' => ''];
             } else {
@@ -140,14 +179,48 @@ if (!class_exists('ProductExport')) {
             exit;
         }
 
-        public function reportQuery($startDate, $endDate)
+        public function reportQuery($month, $year) {
+            // delete files in directory first
+            $files = glob($this->getBasePath() . '/' . 'CSV/*'); // get all file names
+            foreach($files as $file) { // iterate files
+                if(is_file($file)) {
+                    unlink($file); // delete file
+                }
+            }
+
+            $csvFilesArray = [];
+            array_push($csvFilesArray, $this->reportQueryByProvince($month, $year, 'ALL'));
+
+            foreach ($this->provinceList as $province) {
+                array_push($csvFilesArray, $this->reportQueryByProvince($month, $year, $province));
+            }
+
+            return $csvFilesArray;
+        }
+
+        public function reportQueryByProvince($month, $year, $province)
         {
+            $month += 1;
+            $month_name = date("F", mktime(0, 0, 0, $month, 10));
+            $startMonth = $month - 1;
+            $endMonth = $month;
+            $startYear = $year;
+            $endYear = $year;
+
+            if ($month == 1) {
+                // start previous year
+                $startMonth = 12;
+                $startYear = $year - 1;
+            }
+
+            // return $startMonth . " : " . $startYear . " :: " . $endMonth . " : " . $endYear;
+
             $csvArray = [
                 [
                     'date',
                     'treatments/bookings',
                     'client',
-                    'therapist',
+                    'province',
                     'invoice/ordernr',
                     'travel fees',
                     'order total',
@@ -158,16 +231,30 @@ if (!class_exists('ProductExport')) {
                 ]
             ];
 
+            // $metaArray = [];
+
             // the date variables go in here below somehow
 
-            $args = [
-                'type' => 'shop_order',
-                'date_created' => '2020-03-25...2020-06-24',
-            ];
+            if ($province == 'ALL') {
+                $args = [
+                    'type' => 'shop_order',
+                    'date_created' => $startYear . '-' . $startMonth . '-25...' . $endYear . '-' . $endMonth . '-24',
+                    'status' => array('wc-completed')
+                ];
+            } else {
+                $args = [
+                    'type' => 'shop_order',
+                    'date_created' => $startYear . '-' . $startMonth . '-25...' . $endYear . '-' . $endMonth . '-24',
+                    'status' => array('wc-completed'),
+                    'meta_key' => 'Provincefmebilling',
+                    'meta_value' => $province,
+                ];
+            }
+            
             $orders = wc_get_orders($args);
 
             foreach ($orders as $order) {
-                // populate array
+                // Products / Items in order
                 $products = '';
                 $i = 1;
                 foreach ($order->get_items() as $item_id => $item) {
@@ -194,11 +281,14 @@ if (!class_exists('ProductExport')) {
                     }
                 }
 
+                // get Province
+                $order_province = empty(get_post_meta($order->get_id(), 'Provincefmebilling', true)) ? "N/A" : get_post_meta($order->get_id(), 'Provincefmebilling', true);
+
                 $csvArray[] = [
                     $order->get_date_created()->format('Y-m-d'),
                     $products,
                     $order->get_billing_first_name() . ' ' . $order->get_billing_last_name(),
-                    '--therapist--',
+                    $order_province,
                     $order->get_id(),
                     $calloutfee,
                     $order->get_total(),
@@ -207,17 +297,19 @@ if (!class_exists('ProductExport')) {
                     ($order->get_subtotal() * 0.1),
                     (($order->get_subtotal() * 0.6) + $calloutfee)
                 ];
+
+                // array_push($metaArray, [$order->get_id(), get_post_meta($order->get_id(), 'Provincefmebilling', true)]);
             }
 
-            $fp = fopen('text.csv', 'w');
+            $fp = fopen($this->getBasePath() . '/' . 'CSV/'. $month_name . '_' . $endYear . '_' . $province  . '.csv', 'w');
             // echo print_r($orders);
             foreach ($csvArray as $fields) {
                 fputcsv($fp, $fields, ';');
             }
 
             // We need to return something here
-
-            return '';
+            // return $metaArray;
+            return [$province, $this->getBaseUrl() . '/' . 'CSV/'. $month_name . '_' . $endYear . '_' . $province  . '.csv', count($csvArray) - 1];
         }
 
         //Returns the url of the plugin's root folder
